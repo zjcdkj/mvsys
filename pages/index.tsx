@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { useRouter } from 'next/router';
+import { FaCloudUploadAlt, FaChartLine } from 'react-icons/fa';
 
 interface FileInfo {
   name: string;
@@ -18,7 +20,7 @@ interface AudioInfo {
   duration?: number;
 }
 
-export default function Home() {
+const Home: React.FC = () => {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [audioFiles, setAudioFiles] = useState<AudioInfo[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -32,6 +34,8 @@ export default function Home() {
   const [processingFile, setProcessingFile] = useState<string | null>(null);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     fetchUploadRecords();
@@ -119,7 +123,7 @@ export default function Home() {
         setErrorMessage(error.response.data.error || '上传文件时出错。请重试。');
       } else if (error.request) {
         console.error('No response received');
-        setErrorMessage('服务器没有响应，���稍后重试。');
+        setErrorMessage('服务器没有响应，稍后重试。');
       } else {
         console.error('Error setting up request:', error.message);
         setErrorMessage('设置请求时出错。请重试。');
@@ -179,7 +183,7 @@ export default function Home() {
       }
     } catch (error: any) {
       console.error('Error extracting audio:', error);
-      setErrorMessage('音频提取失败，请重试。');
+      setErrorMessage('音频提取失败，请重。');
     } finally {
       setExtractionProgress(prev => ({ ...prev, [filename]: 0 }));
       setProcessingFile(null);
@@ -217,13 +221,13 @@ export default function Home() {
       fetchAudioFiles();
     } catch (error) {
       console.error('Error renaming audio file:', error);
-      setErrorMessage('重命名音频文件失败，请重试。');
+      setErrorMessage('重命名音频文件失败，请重。');
     }
   };
 
-  const handleDeleteAudio = async (id: number) => {
+  const handleDeleteAudio = async (audioId: string) => { // 将参数类型改为 string
     try {
-      await axios.delete(`/api/audio/delete/${id}`);
+      await axios.delete(`/api/audio/delete/${audioId}`);
       fetchAudioFiles();
     } catch (error) {
       console.error('Error deleting audio file:', error);
@@ -251,33 +255,77 @@ export default function Home() {
     }
   };
 
+  const handleAudioClick = async (filename: string) => {
+    try {
+      const response = await fetch(`/api/files/getAudioUrl?filename=${encodeURIComponent(filename)}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      console.log('Received audio URL:', data.url); // 添加日志
+      setAudioSrc(data.url);
+      if (audioRef.current) {
+        audioRef.current.src = data.url;
+        audioRef.current.play().catch(e => {
+          console.error('Error playing audio:', e);
+          setErrorMessage('播放音频时出错，请重试。');
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching audio URL:', error);
+      setErrorMessage('获取音频 URL 时出错，请重试。');
+    }
+  };
+
+  const handleTranscribe = async (audioFileName: string) => {
+    try {
+      const response = await axios.post('/api/transcribe', { filename: audioFileName });
+      if (response.data.success) {
+        router.push('/transcription');
+      } else {
+        setErrorMessage('转录失败，请重试。');
+      }
+    } catch (error) {
+      console.error('Error transcribing audio:', error);
+      setErrorMessage('转录过程中出错，请重试。');
+    }
+  };
+
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">视频分析系统</h1>
+    <div className="container mx-auto" style={{ margin: '20px', paddingLeft: '0px', paddingRight: '0px' }}>
+      <h1 className="text-lg font-bold mb-4 text-blue-600 border-b pb-2">视���文件管理</h1>
       
-      {/* 步骤指示器 */}
-      <div className="flex mb-8">
-        <div 
-          className={`flex-1 text-center cursor-pointer ${currentStep === 1 ? 'text-blue-500 font-bold' : ''}`}
+      {/* 切换按钮 */}
+      <div className="flex mb-4">
+        <button 
+          className={`flex items-center mr-4 px-6 py-3 rounded-full transition-all duration-300 ${
+            currentStep === 1 
+              ? 'bg-blue-500 text-white shadow-lg transform hover:scale-105' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
           onClick={() => handleStepChange(1)}
         >
-          <span className={`inline-block w-8 h-8 rounded-full ${currentStep === 1 ? 'bg-blue-500 text-white' : 'bg-gray-300'} mr-2`}>1</span>
-          上传
-        </div>
-        <div 
-          className={`flex-1 text-center cursor-pointer ${currentStep === 2 ? 'text-blue-500 font-bold' : ''}`}
+          <FaCloudUploadAlt className="mr-2 text-2xl animate-bounce" />
+          <span className="font-semibold">上传</span>
+        </button>
+        <button 
+          className={`flex items-center px-6 py-3 rounded-full transition-all duration-300 ${
+            currentStep === 2 
+              ? 'bg-green-500 text-white shadow-lg transform hover:scale-105' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
           onClick={() => handleStepChange(2)}
         >
-          <span className={`inline-block w-8 h-8 rounded-full ${currentStep === 2 ? 'bg-blue-500 text-white' : 'bg-gray-300'} mr-2`}>2</span>
-          数据处理
-        </div>
+          <FaChartLine className="mr-2 text-2xl animate-pulse" />
+          <span className="font-semibold">数据处理</span>
+        </button>
       </div>
 
       {currentStep === 1 ? (
         // 上传步骤
         <div className="mb-8">
-          <h2 className="text-xl font-semibold mb-2">上传视频</h2>
-          <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
+          <h2 className="text-base font-semibold mb-2 text-blue-600">上传视频</h2>
+          <div className="border-2 border-dashed border-blue-300 rounded-lg p-8 text-center">
             <input
               type="file"
               onChange={handleFileSelect}
@@ -286,17 +334,17 @@ export default function Home() {
               accept="video/mp4"
             />
             <label htmlFor="fileInput" className="cursor-pointer">
-              <svg className="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+              <svg className="mx-auto h-12 w-12 text-blue-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
                 <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <p className="mt-1">点击上传或拖拽视频到这里</p>
+              <p className="mt-1 text-blue-600">点击上传或拖拽视频到这里</p>
             </label>
             <p className="text-xs text-gray-500 mt-2">
-              支持MP4格式，文件大小不超过200MB
+              支持MP4格式，文件大小不过200MB
             </p>
             {selectedFile && (
               <div className="mt-4">
-                <p>已选择文件: {selectedFile.name}</p>
+                <p className="text-blue-600">已选择文件: {selectedFile.name}</p>
                 <button
                   onClick={handleUpload}
                   className="mt-2 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
@@ -313,7 +361,7 @@ export default function Home() {
                     style={{ width: `${uploadProgress}%` }}
                   ></div>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">{uploadProgress}% 已上传</p>
+                <p className="text-sm text-blue-600 mt-1">{uploadProgress}% 已上传</p>
               </div>
             )}
           </div>
@@ -321,11 +369,11 @@ export default function Home() {
       ) : (
         // 数据处理步骤
         <div className="mb-8">
-          <h2 className="text-xl font-semibold mb-2">数据处理</h2>
-          <div className="border-2 border-gray-300 rounded-lg p-8">
+          <h2 className="text-base font-semibold mb-2 text-blue-600">数据处理</h2>
+          <div className="border-2 border-blue-300 rounded-lg p-8">
             {processingFile ? (
               <div>
-                <p>正在处理文件: {processingFile}</p>
+                <p className="text-blue-600">正在处理文件: {processingFile}</p>
                 <div className="mt-4">
                   <div className="w-full bg-gray-200 rounded-full h-2.5">
                     <div
@@ -333,13 +381,13 @@ export default function Home() {
                       style={{ width: `${extractionProgress[processingFile] || 0}%` }}
                     ></div>
                   </div>
-                  <p className="text-sm text-gray-600 mt-1">
+                  <p className="text-sm text-blue-600 mt-1">
                     {extractionProgress[processingFile] || 0}% 已完成
                   </p>
                 </div>
               </div>
             ) : (
-              <p>请选择一个视频文件进行处理</p>
+              <p className="text-blue-600">请选择一个视频文件进行处理</p>
             )}
           </div>
         </div>
@@ -355,35 +403,41 @@ export default function Home() {
 
       {/* 音频文件列表 */}
       <div className="mb-8">
-        <h2 className="text-xl font-semibold mb-2 text-center">音频文件</h2>
-        <table className="w-full border-collapse border border-gray-300">
+        <h2 className="text-base font-semibold mb-2 text-center text-blue-600">音频文件</h2>
+        <table className="w-full border-collapse border border-blue-300">
           <thead>
-            <tr className="bg-gray-100">
-              <th className="border border-gray-300 p-2 text-center">序号</th>
-              <th className="border border-gray-300 p-2 text-center">名称</th>
-              <th className="border border-gray-300 p-2 text-center">大小</th>
-              <th className="border border-gray-300 p-2 text-center">时长</th>
-              <th className="border border-gray-300 p-2 text-center">生成时间</th>
-              <th className="border border-gray-300 p-2 text-center">状态</th>
-              <th className="border border-gray-300 p-2 text-center">操作</th>
+            <tr className="bg-blue-100">
+              <th className="border border-blue-300 p-2 text-center">序号</th>
+              <th className="border border-blue-300 p-2 text-center">名称</th>
+              <th className="border border-blue-300 p-2 text-center">大小</th>
+              <th className="border border-blue-300 p-2 text-center">时长</th>
+              <th className="border border-blue-300 p-2 text-center">生成时间</th>
+              <th className="border border-blue-300 p-2 text-center">状态</th>
+              <th className="border border-blue-300 p-2 text-center">操作</th>
             </tr>
           </thead>
           <tbody>
             {audioFiles.map((audio, index) => (
               <tr key={audio.id}>
-                <td className="border border-gray-300 p-2 text-center">{index + 1}</td>
-                <td className="border border-gray-300 p-2 text-center">
+                <td className="border border-blue-300 p-2 text-center">{index + 1}</td>
+                <td className="border border-blue-300 p-2 text-center">
                   <button
-                    onClick={() => handlePlayAudio(audio.name)}
-                    className="text-blue-500 hover:underline"
+                    onClick={() => handleAudioClick(audio.name)}
+                    className="text-blue-500 hover:underline mr-2"
                   >
-                    {audio.name}
+                    播放
+                  </button>
+                  <button
+                    onClick={() => handleTranscribe(audio.name)}
+                    className="bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600"
+                  >
+                    转录
                   </button>
                 </td>
-                <td className="border border-gray-300 p-2 text-center">{(audio.size / 1024 / 1024).toFixed(2)} MB</td>
-                <td className="border border-gray-300 p-2 text-center">{audio.duration ? `${audio.duration.toFixed(2)}秒` : 'N/A'}</td>
-                <td className="border border-gray-300 p-2 text-center">{new Date(audio.createdAt).toLocaleString()}</td>
-                <td className="border border-gray-300 p-2 text-center">
+                <td className="border border-blue-300 p-2 text-center">{(audio.size / 1024 / 1024).toFixed(2)} MB</td>
+                <td className="border border-blue-300 p-2 text-center">{audio.duration ? `${audio.duration.toFixed(2)}秒` : 'N/A'}</td>
+                <td className="border border-blue-300 p-2 text-center">{new Date(audio.createdAt).toLocaleString()}</td>
+                <td className="border border-blue-300 p-2 text-center">
                   {audio.status === 'completed' ? '已完成' : (
                     <div>
                       转换中 - {audio.progress}%
@@ -396,10 +450,10 @@ export default function Home() {
                     </div>
                   )}
                 </td>
-                <td className="border border-gray-300 p-2 text-center">
+                <td className="border border-blue-300 p-2 text-center">
                   <button
                     onClick={() => handleDeleteAudio(audio.id)}
-                    className="bg-red-500 text-white px-2 py-1 rounded"
+                    className="bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600"
                   >
                     删除
                   </button>
@@ -411,15 +465,15 @@ export default function Home() {
       </div>
 
       {/* 音频播放器 */}
-      <audio ref={audioRef} className="hidden" controls />
+      <audio ref={audioRef} controls className="w-full mt-4" style={{display: audioSrc ? 'block' : 'none'}} />
 
       {/* 视频文件列表 */}
       <div>
-        <h2 className="text-xl font-semibold mb-2">视频文件</h2>
-        <ul className="border rounded-lg p-4">
+        <h2 className="text-xl font-semibold mb-2 text-blue-600">视频文件</h2>
+        <ul className="border border-blue-300 rounded-lg p-4">
           {files.map((file, index) => (
-            <li key={index} className="mb-4 pb-4 border-b last:border-b-0">
-              <span className="font-semibold">{file.name}</span>
+            <li key={index} className="mb-4 pb-4 border-b border-blue-200 last:border-b-0">
+              <span className="font-semibold text-blue-600">{file.name}</span>
               <br />
               <span className="text-sm text-gray-500">
                 大小: {(file.size / 1024 / 1024).toFixed(2)} MB
@@ -441,7 +495,7 @@ export default function Home() {
                     className="mt-2 bg-blue-500 text-white px-2 py-1 rounded text-sm hover:bg-blue-600"
                     disabled={extractionProgress[file.name] > 0}
                   >
-                    {extractionProgress[file.name] > 0 ? '提取中...' : '提取音频'}
+                    {extractionProgress[file.name] > 0 ? '提取...' : '提取音频'}
                   </button>
                   {extractionProgress[file.name] > 0 && (
                     <div className="mt-2">
@@ -451,7 +505,7 @@ export default function Home() {
                           style={{ width: `${extractionProgress[file.name]}%` }}
                         ></div>
                       </div>
-                      <p className="text-sm text-gray-600 mt-1">{extractionProgress[file.name]}% 已完成</p>
+                      <p className="text-sm text-blue-600 mt-1">{extractionProgress[file.name]}% 已完成</p>
                     </div>
                   )}
                 </>
@@ -468,4 +522,6 @@ export default function Home() {
       </div>
     </div>
   );
-}
+};
+
+export default Home;

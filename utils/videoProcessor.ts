@@ -1,18 +1,17 @@
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegStatic from 'ffmpeg-static';
-import ffprobeStatic from '@ffprobe-installer/ffprobe';
-
-ffmpeg.setFfmpegPath(ffmpegStatic as string);
-ffmpeg.setFfprobePath(ffprobeStatic.path);
-
+import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { Configuration, OpenAIApi } from 'openai';
 import { MongoClient } from 'mongodb';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffprobeInstaller from '@ffprobe-installer/ffprobe';
+import { promisify } from 'util';
+import { promises as fsPromises } from 'fs';
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
-  basePath: process.env.OPENAI_BASE_URL,
+  basePath: 'https://api.openai-hub.com/v1', // 使用您提供的自定义 URL
 });
 const openai = new OpenAIApi(configuration);
 
@@ -22,11 +21,14 @@ if (!mongoUri) {
   process.exit(1);
 }
 
-console.log('MongoDB URI:', mongoUri); // 添加这行来打印 URI
+console.log('MongoDB URI:', mongoUri);
 
 let mongoClient: MongoClient | null = null;
 
 async function getMongoClient() {
+  if (!mongoUri) {
+    throw new Error('MONGODB_URI is not defined');
+  }
   if (!mongoClient) {
     try {
       mongoClient = new MongoClient(mongoUri);
@@ -40,6 +42,21 @@ async function getMongoClient() {
   return mongoClient;
 }
 
+function runCommand(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error executing command: ${command}`);
+        console.error(`Error: ${error}`);
+        console.error(`stderr: ${stderr}`);
+        reject(error);
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
 export async function processVideo(filePath: string) {
   try {
     // 1. 音频分离
@@ -49,7 +66,7 @@ export async function processVideo(filePath: string) {
     const textContent = await convertSpeechToText(audioFile);
 
     // 3. 文本清洗
-    const cleanedText = cleanText(textContent);
+    const cleanedText = await cleanText(textContent);
 
     // 4. 文本存储
     await storeText([cleanedText]);
@@ -64,7 +81,7 @@ export async function processVideo(filePath: string) {
   }
 }
 
-export async function extractAudio(videoPath: string, onProgress: (progress: number) => void): Promise<string> {
+export function extractAudio(videoPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const outputDir = path.join(process.cwd(), 'download', 'mp3');
     if (!fs.existsSync(outputDir)) {
@@ -75,16 +92,16 @@ export async function extractAudio(videoPath: string, onProgress: (progress: num
     console.log('Input video path:', videoPath);
     console.log('Output audio path:', outputPath);
 
+    if (fs.existsSync(outputPath)) {
+      fs.unlinkSync(outputPath);
+    }
+
     ffmpeg(videoPath)
       .outputOptions('-vn')
-      .outputOptions('-acodec', 'libmp3lame')
-      .outputOptions('-ac', '2')
-      .outputOptions('-b:a', '192k')
-      .on('progress', (progress) => {
-        if (progress.percent) {
-          onProgress(Math.round(progress.percent));
-        }
-      })
+      .audioCodec('libmp3lame')
+      .audioChannels(2)
+      .audioBitrate('192k')
+      .output(outputPath)
       .on('end', () => {
         console.log('Audio extraction completed:', outputPath);
         resolve(outputPath);
@@ -93,22 +110,36 @@ export async function extractAudio(videoPath: string, onProgress: (progress: num
         console.error('Error during audio extraction:', err);
         reject(err);
       })
-      .save(outputPath);
+      .run();
   });
 }
 
-async function convertSpeechToText(audioFile: string): Promise<string> {
-  // 使用OpenAI的Whisper API进行语音识别
-  const response = await openai.createTranscription(
-    fs.createReadStream(audioFile) as any,
-    "whisper-1"
-  );
-  return response.data.text;
+export async function convertSpeechToText(audioFile: string): Promise<string> {
+  try {
+    const response = await openai.createTranscription(
+      fs.createReadStream(audioFile) as any,
+      "whisper-1"
+    );
+    const transcription = response.data.text;
+    
+    // 保存转录文本为 txt 文件
+    const txtFilePath = audioFile.replace('.mp3', '.txt');
+    await fsPromises.writeFile(txtFilePath, transcription, 'utf-8');
+    
+    console.log('Transcription saved to:', txtFilePath);
+    return transcription;
+  } catch (error) {
+    console.error('Error in speech to text conversion:', error);
+    throw error;
+  }
 }
 
-function cleanText(text: string): string {
-  // 实现文本清洗逻辑
-  return text; // 临时返回，实际实现需要清洗文本
+export async function cleanText(text: string): Promise<string> {
+  // 这里可以实现文本清洗的逻辑
+  // 例如：移除特殊字符，纠正常见错误等
+  let cleanedText = text.replace(/[^\w\s.,?!]/g, '');
+  cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
+  return cleanedText;
 }
 
 async function storeText(texts: string[]): Promise<void> {
@@ -125,20 +156,61 @@ async function storeText(texts: string[]): Promise<void> {
 }
 
 async function performAdvancedAnalysis(texts: string[]): Promise<any> {
-  // 实现高级分析逻辑
-  // 返回分析结果和知识图谱
-  return { analysis: "Sample analysis result" }; // 临时返回，实际实现需要进行高级分析
+  return { analysis: "Sample analysis result" };
 }
 
-export function getAudioDuration(filePath: string): Promise<number> {
+export async function getAudioDuration(audioPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
+    ffmpeg.ffprobe(audioPath, (err, metadata) => {
       if (err) {
-        console.error('Error in ffprobe:', err);
+        console.error('Error getting audio duration:', err);
         reject(err);
       } else {
-        resolve(metadata.format.duration || 0);
+        const duration = metadata.format.duration;
+        console.log('Audio duration:', duration);
+        resolve(duration || 0); // 添加 || 0 来确保返回一个数字
       }
     });
   });
+}
+
+export async function checkFFmpeg(): Promise<boolean> {
+  try {
+    const getAvailableFormats = promisify(ffmpeg.getAvailableFormats);
+    await getAvailableFormats();
+    console.log('FFmpeg is available');
+    return true;
+  } catch (error) {
+    console.error('Error checking FFmpeg:', error);
+    return false;
+  }
+}
+
+export async function getFFmpegVersion(): Promise<string> {
+  try {
+    const getAvailableCodecs = promisify(ffmpeg.getAvailableCodecs);
+    const getAvailableEncoders = promisify(ffmpeg.getAvailableEncoders);
+    
+    const codecs = await getAvailableCodecs();
+    const encoders = await getAvailableEncoders();
+    
+    return `FFmpeg version: available (codecs: ${Object.keys(codecs).length}, encoders: ${Object.keys(encoders).length})`;
+  } catch (error) {
+    console.error('Error getting FFmpeg version:', error);
+    return 'FFmpeg version: unavailable';
+  }
+}
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
+
+export async function getAudioFileUrl(filename: string): Promise<string> {
+  const filePath = path.join(process.cwd(), 'download', 'mp3', filename);
+  console.log('Checking for audio file at:', filePath); // 添加日志
+  if (fs.existsSync(filePath)) {
+    return `/api/files/download/mp3/${encodeURIComponent(filename)}`;
+  } else {
+    console.error('Audio file not found:', filePath); // 添加错误日志
+    throw new Error('Audio file not found');
+  }
 }

@@ -2,7 +2,7 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import formidable from 'formidable';
 import fs from 'fs';
 import path from 'path';
-import { extractAudio, getAudioDuration } from '../../../utils/videoProcessor';
+import { extractAudio, getAudioDuration, checkFFmpeg, getFFmpegVersion, getAudioFileUrl } from '../../../utils/videoProcessor';
 
 // 在文件顶部添加这个接口定义
 interface FileInfo {
@@ -12,6 +12,9 @@ interface FileInfo {
   uploadedAt: string;
   audioFile?: string;
 }
+
+// 在文件顶部添加这个导入
+import { File } from 'formidable';
 
 export const config = {
   api: {
@@ -38,6 +41,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   console.log(`Received ${req.method} request for action: ${action}`);
 
   try {
+    // 只在需要使用 FFmpeg 的操作中进行检查
+    if (action === 'extractAudio') {
+      const ffmpegAvailable = await checkFFmpeg();
+      if (!ffmpegAvailable) {
+        return res.status(500).json({ error: 'FFmpeg is not available' });
+      }
+    }
+
     switch (action) {
       case 'upload':
         if (req.method === 'POST') {
@@ -56,7 +67,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
             console.log('Form parsed successfully');
 
-            const file = files.file?.[0];
+            const file = (files.file as File[])?.[0];
             if (!file) {
               console.error('No file uploaded');
               return res.status(400).json({ error: 'No file uploaded' });
@@ -116,7 +127,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (req.method === 'GET') {
           try {
             const records = JSON.parse(fs.readFileSync(recordsFile, 'utf-8'));
-            console.log('Records retrieved:', records); // 添加这行日志
+            console.log('Records retrieved:', records);
             res.status(200).json(records);
           } catch (error) {
             console.error('Error reading records file:', error);
@@ -145,7 +156,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             fs.unlinkSync(filePath);
             console.log('Video file deleted successfully');
             
-            // 删除对应的音频文件（如果存在）
+            // 删除对应的音频文件（如果存��）
             if (fs.existsSync(audioFilePath)) {
               fs.unlinkSync(audioFilePath);
               console.log('Audio file deleted successfully');
@@ -209,6 +220,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
 
             try {
+              // 在提取音频之前检查 FFmpeg
+              const ffmpegAvailable = await checkFFmpeg();
+              if (!ffmpegAvailable) {
+                return res.status(500).json({ error: 'FFmpeg is not available' });
+              }
+
+              // 获取 FFmpeg 版本
+              const ffmpegVersion = await getFFmpegVersion();
+              console.log('FFmpeg version:', ffmpegVersion);
+
               // 使用 SSE (Server-Sent Events) 来报告进度
               res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
@@ -216,11 +237,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 'Connection': 'keep-alive'
               });
 
-              const sendProgress = (progress: number) => {
-                res.write(`data: ${JSON.stringify({ progress })}\n\n`);
-              };
-
-              const audioPath = await extractAudio(videoPath, sendProgress);
+              const audioPath = await extractAudio(videoPath);
               const audioFilename = path.basename(audioPath);
               
               console.log('Audio extracted successfully:', audioFilename);
@@ -245,7 +262,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               res.end();
             } catch (error) {
               console.error('Error extracting audio:', error);
-              res.write(`data: ${JSON.stringify({ error: 'Error extracting audio' })}\n\n`);
+              res.write(`data: ${JSON.stringify({ error: 'Error extracting audio', details: (error as Error).message })}\n\n`);
               res.end();
             }
           });
@@ -274,6 +291,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           } else {
             console.log('Audio file not found:', audioPath);
             res.status(404).json({ error: 'Audio file not found' });
+          }
+        } else {
+          res.setHeader('Allow', ['GET']);
+          res.status(405).end(`Method ${req.method} Not Allowed`);
+        }
+        break;
+
+      case 'getAudioUrl':
+        if (req.method === 'GET') {
+          const { filename } = req.query;
+          if (typeof filename !== 'string') {
+            return res.status(400).json({ error: 'Invalid filename' });
+          }
+          try {
+            const url = await getAudioFileUrl(filename);
+            console.log('Audio URL generated:', url); // 添加日志
+            return res.status(200).json({ url });
+          } catch (error) {
+            console.error('Error getting audio URL:', error); // 添加错误日志
+            return res.status(404).json({ error: 'Audio file not found' });
           }
         } else {
           res.setHeader('Allow', ['GET']);

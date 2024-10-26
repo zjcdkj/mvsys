@@ -2,5 +2,11 @@
   "/_app": "pages/_app.js",
   "/_error": "pages/_error.js",
   "/_document": "pages/_document.js",
-  "/": "pages/index.js"
+  "/transcription": "pages/transcription.js",
+  "/": "pages/index.js",
+  "/api/files/[action]": "pages/api/files/[action].js",
+  "/knowledge": "pages/knowledge.js",
+  "/api/getKnowledgeFiles": "pages/api/getKnowledgeFiles.js",
+  "/api/transcriptions": "pages/api/transcriptions.js",
+  "/api/splitAndVectorize": "pages/api/splitAndVectorize.js"
 }
