@@ -1,11 +1,10 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-import { Configuration, OpenAIApi } from 'openai';
+import OpenAI from 'openai';
 
-const configuration = new Configuration({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  basePath: process.env.OPENAI_API_BASE,
+  baseURL: 'https://api.openai-hub.com/v1', // 使用您提供的自定义 URL
 });
-const openai = new OpenAIApi(configuration);
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'POST') {
@@ -23,16 +22,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ];
 
       console.log('Sending request to OpenAI API...');
-      const response = await openai.createChatCompletion({
+      const response = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
         messages: messages,
       });
       console.log('Received response from OpenAI API');
 
-      const cleanedText = response.data.choices[0].message?.content?.trim() || '';
+      const cleanedText = response.choices[0].message?.content?.trim() || '';
 
       // Log the API response for backend visibility
-      console.log('API Response:', JSON.stringify(response.data, null, 2));
+      console.log('API Response:', JSON.stringify(response, null, 2));
 
       res.status(200).json({ 
         cleanedText,

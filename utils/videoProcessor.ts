@@ -1,19 +1,19 @@
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { Configuration, OpenAIApi } from 'openai';
+import OpenAI from 'openai';
 import { MongoClient } from 'mongodb';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { promisify } from 'util';
 import { promises as fsPromises } from 'fs';
+import { connectToDatabase } from './database';
 
-const configuration = new Configuration({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  basePath: 'https://api.openai-hub.com/v1', // 使用您提供的自定义 URL
+  baseURL: 'https://api.openai-hub.com/v1', // 使用您提供的自定义 URL
 });
-const openai = new OpenAIApi(configuration);
 
 const mongoUri = process.env.MONGODB_URI;
 if (!mongoUri) {
@@ -83,7 +83,7 @@ export async function processVideo(filePath: string) {
 
 export function extractAudio(videoPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const outputDir = path.join(process.cwd(), 'download', 'mp3');
+    const outputDir = path.join(process.cwd(), 'public', 'audio');
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
@@ -92,19 +92,32 @@ export function extractAudio(videoPath: string): Promise<string> {
     console.log('Input video path:', videoPath);
     console.log('Output audio path:', outputPath);
 
-    if (fs.existsSync(outputPath)) {
-      fs.unlinkSync(outputPath);
-    }
-
     ffmpeg(videoPath)
       .outputOptions('-vn')
       .audioCodec('libmp3lame')
       .audioChannels(2)
       .audioBitrate('192k')
       .output(outputPath)
-      .on('end', () => {
+      .on('end', async () => {
         console.log('Audio extraction completed:', outputPath);
-        resolve(outputPath);
+        try {
+          const { db } = await connectToDatabase();
+          const collection = db.collection('audio_files');
+          const duration = await getAudioDuration(outputPath);
+          await collection.insertOne({
+            name: path.basename(outputPath),
+            size: fs.statSync(outputPath).size,
+            createdAt: new Date(),
+            path: outputPath,
+            originalVideo: path.basename(videoPath),
+            duration: duration,
+            transcriptionStatus: 'not_transcribed'
+          });
+          resolve(outputPath);
+        } catch (error) {
+          console.error('Error saving audio file info to database:', error);
+          reject(error);
+        }
       })
       .on('error', (err) => {
         console.error('Error during audio extraction:', err);
@@ -114,16 +127,28 @@ export function extractAudio(videoPath: string): Promise<string> {
   });
 }
 
-export async function convertSpeechToText(audioFile: string): Promise<string> {
+export async function convertSpeechToText(audioFile: string, progressCallback?: (progress: number) => void): Promise<string> {
   try {
-    const response = await openai.createTranscription(
-      fs.createReadStream(audioFile) as any,
-      "whisper-1"
-    );
-    const transcription = response.data.text;
+    const audioPath = path.join(process.cwd(), 'public', 'audio', audioFile);
+    if (!fs.existsSync(audioPath)) {
+      throw new Error(`Audio file not found: ${audioPath}`);
+    }
+
+    // 模拟转录进度
+    for (let i = 0; i <= 100; i += 10) {
+      await new Promise(resolve => setTimeout(resolve, 500)); // 每0.5秒更新一次进度
+      progressCallback && progressCallback(i);
+    }
+
+    const response = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(audioPath),
+      model: "whisper-1",
+    });
+    
+    const transcription = response.text;
     
     // 保存转录文本为 txt 文件
-    const txtFilePath = audioFile.replace('.mp3', '.txt');
+    const txtFilePath = audioPath.replace('.mp3', '.txt');
     await fsPromises.writeFile(txtFilePath, transcription, 'utf-8');
     
     console.log('Transcription saved to:', txtFilePath);
@@ -159,17 +184,15 @@ async function performAdvancedAnalysis(texts: string[]): Promise<any> {
   return { analysis: "Sample analysis result" };
 }
 
-export async function getAudioDuration(audioPath: string): Promise<number> {
+export async function getAudioDuration(filePath: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(audioPath, (err, metadata) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) {
-        console.error('Error getting audio duration:', err);
         reject(err);
-      } else {
-        const duration = metadata.format.duration;
-        console.log('Audio duration:', duration);
-        resolve(duration || 0); // 添加 || 0 来确保返回一个数字
+        return;
       }
+      const durationInSeconds = metadata.format.duration;
+      resolve(durationInSeconds);
     });
   });
 }
@@ -205,12 +228,23 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 export async function getAudioFileUrl(filename: string): Promise<string> {
-  const filePath = path.join(process.cwd(), 'download', 'mp3', filename);
-  console.log('Checking for audio file at:', filePath); // 添加日志
-  if (fs.existsSync(filePath)) {
-    return `/api/files/download/mp3/${encodeURIComponent(filename)}`;
-  } else {
-    console.error('Audio file not found:', filePath); // 添加错误日志
-    throw new Error('Audio file not found');
+  // 检查多个可能的路径
+  const possiblePaths = [
+    path.join(process.cwd(), 'download', 'mp3', filename),
+    path.join(process.cwd(), 'public', 'audio', filename),
+    path.join(process.cwd(), 'public', 'uploads', filename)
+  ];
+
+  for (const filePath of possiblePaths) {
+    console.log('Checking for audio file at:', filePath);
+    if (fs.existsSync(filePath)) {
+      console.log('Audio file found at:', filePath);
+      // 返回相对于公共目录的路径
+      return `/audio/${encodeURIComponent(filename)}`;
+    }
   }
+
+  console.error('Audio file not found:', filename);
+  console.error('Checked paths:', possiblePaths);
+  throw new Error(`Audio file not found: ${filename}`);
 }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useRouter } from 'next/router';
-import { FaCloudUploadAlt, FaChartLine } from 'react-icons/fa';
+import { FaCloudUploadAlt, FaChartLine, FaPlay, FaPause } from 'react-icons/fa';
 
 interface FileInfo {
   name: string;
@@ -18,6 +18,8 @@ interface AudioInfo {
   status: 'completed' | 'converting';
   progress?: number;
   duration?: number;
+  transcriptionStatus: 'transcribing' | 'transcribed' | 'not_transcribed';
+  transcriptionProgress?: number;
 }
 
 const Home: React.FC = () => {
@@ -45,20 +47,11 @@ const Home: React.FC = () => {
   const fetchUploadRecords = async () => {
     try {
       const response = await axios.get('/api/files/list');
-      console.log('Fetched records:', response.data); // 添加这行日志
+      console.log('Fetched records:', response.data);
       setFiles(response.data);
     } catch (error: any) {
       console.error('Error fetching upload records:', error);
-      if (error.response) {
-        console.error('Error response:', error.response.data);
-        setErrorMessage(`获取上传记录时出错: ${error.response.data.error || '未知错误'}`);
-      } else if (error.request) {
-        console.error('No response received');
-        setErrorMessage('服务器没有响应，请稍后重试。');
-      } else {
-        console.error('Error setting up request:', error.message);
-        setErrorMessage('设置请求时出错。请重试。');
-      }
+      setErrorMessage('获取上传记录时出错，请重试。');
     }
   };
 
@@ -68,6 +61,7 @@ const Home: React.FC = () => {
       setAudioFiles(response.data);
     } catch (error) {
       console.error('Error fetching audio files:', error);
+      setErrorMessage('获取音频文件列表失败，请重试。');
     }
   };
 
@@ -103,6 +97,9 @@ const Home: React.FC = () => {
       setSuccessMessage(null);
       console.log('Starting file upload');
       const response = await axios.post('/api/files/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
         onUploadProgress: (progressEvent: any) => {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
           setUploadProgress(percentCompleted);
@@ -113,17 +110,16 @@ const Home: React.FC = () => {
       console.log('Upload response:', response.data);
       setUploadProgress(0);
       setSelectedFile(null);
-      fetchUploadRecords();
-      // 移除这行: setCurrentStep(2);
+      fetchUploadRecords(); // 上传成功后重新获取文件列表
       setSuccessMessage('文件上传成功！');
     } catch (error: any) {
       console.error('Error uploading file:', error);
       if (error.response) {
         console.error('Error response:', error.response.data);
-        setErrorMessage(error.response.data.error || '上传文件时出错。请重试。');
+        setErrorMessage(`上传文件时出错: ${error.response.data.error || '未知错误'}`);
       } else if (error.request) {
         console.error('No response received');
-        setErrorMessage('服务器没有响应，稍后重试。');
+        setErrorMessage('服务器没有响应，请稍后重试。');
       } else {
         console.error('Error setting up request:', error.message);
         setErrorMessage('设置请求时出错。请重试。');
@@ -142,48 +138,22 @@ const Home: React.FC = () => {
       
       setCurrentStep(2);
       
-      const formData = new FormData();
-      formData.append('filename', filename);
-
-      const response = await axios.post('/api/files/extractAudio', formData, {
+      const response = await axios.post('/api/files/extractAudio', { filename }, {
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
             setExtractionProgress(prev => ({ ...prev, [filename]: percentCompleted }));
           }
         },
-        responseType: 'text',
-        headers: {
-          'Accept': 'text/event-stream',
-        },
       });
 
-      const lines = response.data.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data:')) {
-          const data = JSON.parse(line.slice(5));
-          if (data.progress) {
-            setExtractionProgress(prev => ({ ...prev, [filename]: data.progress }));
-          } else if (data.complete) {
-            console.log('Audio extraction completed:', data.audioFile);
-            setSuccessMessage('音频提取成功！');
-            fetchUploadRecords();
-            
-            const newAudioFile: AudioInfo = {
-              id: Date.now().toString(),
-              name: data.audioFile,
-              size: data.size,
-              createdAt: new Date().toISOString(),
-              status: 'completed',
-              duration: data.duration
-            };
-            setAudioFiles(prev => [...prev, newAudioFile]);
-          }
-        }
-      }
+      console.log('Audio extraction completed:', response.data);
+      setSuccessMessage('音频提取成功！');
+      fetchUploadRecords();
+      fetchAudioFiles(); // 确保这个函数被调用
     } catch (error: any) {
       console.error('Error extracting audio:', error);
-      setErrorMessage('音频提取失败，请重。');
+      setErrorMessage('音频提取失败，请重试。');
     } finally {
       setExtractionProgress(prev => ({ ...prev, [filename]: 0 }));
       setProcessingFile(null);
@@ -204,7 +174,7 @@ const Home: React.FC = () => {
       if (error.response) {
         setErrorMessage(`文件删除失败：${error.response.data.error}`);
       } else {
-        setErrorMessage('文件删除失败，请重试。');
+        setErrorMessage('文件除失败，请重试。');
       }
     }
   };
@@ -225,13 +195,18 @@ const Home: React.FC = () => {
     }
   };
 
-  const handleDeleteAudio = async (audioId: string) => { // 将参数类型改为 string
+  const handleDeleteAudio = async (audioId: string) => {
     try {
-      await axios.delete(`/api/audio/delete/${audioId}`);
-      fetchAudioFiles();
+      const response = await axios.delete(`/api/audio/delete/${audioId}`);
+      if (response.data.success) {
+        setSuccessMessage('音频文件删除成功！');
+        fetchAudioFiles(); // 重新获取音频文件列表
+      } else {
+        setErrorMessage('删除音频文件失败，请重试。');
+      }
     } catch (error) {
       console.error('Error deleting audio file:', error);
-      setErrorMessage('删除音频文件失败，请重试。');
+      setErrorMessage('删除音频文件时出错，请重试。');
     }
   };
 
@@ -257,13 +232,26 @@ const Home: React.FC = () => {
 
   const handleAudioClick = async (filename: string) => {
     try {
+      if (currentlyPlaying === filename && audioRef.current) {
+        if (audioRef.current.paused) {
+          audioRef.current.play();
+        } else {
+          audioRef.current.pause();
+        }
+        return;
+      }
+
       const response = await fetch(`/api/files/getAudioUrl?filename=${encodeURIComponent(filename)}`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data = await response.json();
-      console.log('Received audio URL:', data.url); // 添加日志
+      console.log('Received audio URL:', data.url);
+      if (!data.url) {
+        throw new Error('No audio URL received');
+      }
       setAudioSrc(data.url);
+      setCurrentlyPlaying(filename);
       if (audioRef.current) {
         audioRef.current.src = data.url;
         audioRef.current.play().catch(e => {
@@ -272,28 +260,70 @@ const Home: React.FC = () => {
         });
       }
     } catch (error) {
-      console.error('Error fetching audio URL:', error);
-      setErrorMessage('获取音频 URL 时出错，请重试。');
+      console.error('Error fetching or playing audio:', error);
+      setErrorMessage(`获取或播放音频时出错：${error.message}`);
     }
   };
 
   const handleTranscribe = async (audioFileName: string) => {
     try {
+      setErrorMessage(null);
+      // 立即更新状态为 'transcribing'
+      setAudioFiles(prevFiles => 
+        prevFiles.map(file => 
+          file.name === audioFileName 
+            ? { ...file, transcriptionStatus: 'transcribing', transcriptionProgress: 0 } 
+            : file
+        )
+      );
+
       const response = await axios.post('/api/transcribe', { filename: audioFileName });
+      
       if (response.data.success) {
-        router.push('/transcription');
+        setSuccessMessage('转录成功！');
+        // 更新状态为 'transcribed'
+        setAudioFiles(prevFiles => 
+          prevFiles.map(file => 
+            file.name === audioFileName 
+              ? { ...file, transcriptionStatus: 'transcribed', transcriptionProgress: 100 } 
+              : file
+          )
+        );
       } else {
         setErrorMessage('转录失败，请重试。');
+        // 如果失败，将状态恢复为 'not_transcribed'
+        setAudioFiles(prevFiles => 
+          prevFiles.map(file => 
+            file.name === audioFileName 
+              ? { ...file, transcriptionStatus: 'not_transcribed', transcriptionProgress: 0 } 
+              : file
+          )
+        );
       }
     } catch (error) {
       console.error('Error transcribing audio:', error);
       setErrorMessage('转录过程中出错，请重试。');
+      // 如果出错，将状态恢复为 'not_transcribed'
+      setAudioFiles(prevFiles => 
+        prevFiles.map(file => 
+          file.name === audioFileName 
+            ? { ...file, transcriptionStatus: 'not_transcribed', transcriptionProgress: 0 } 
+            : file
+        )
+      );
     }
   };
 
+  function formatDuration(seconds: number | undefined): string {
+    if (seconds === undefined) return 'N/A';
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.floor(seconds % 60);
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  }
+
   return (
     <div className="container mx-auto" style={{ margin: '20px', paddingLeft: '0px', paddingRight: '0px' }}>
-      <h1 className="text-lg font-bold mb-4 text-blue-600 border-b pb-2">视���文件管理</h1>
+      <h1 className="text-lg font-bold mb-4 text-blue-600 border-b pb-2">文件管理</h1>
       
       {/* 切换按钮 */}
       <div className="flex mb-4">
@@ -337,7 +367,7 @@ const Home: React.FC = () => {
               <svg className="mx-auto h-12 w-12 text-blue-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
                 <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <p className="mt-1 text-blue-600">点击上传或拖拽视频到这里</p>
+              <p className="mt-1 text-blue-600">击上传或拖拽视频到这里</p>
             </label>
             <p className="text-xs text-gray-500 mt-2">
               支持MP4格式，文件大小不过200MB
@@ -403,11 +433,12 @@ const Home: React.FC = () => {
 
       {/* 音频文件列表 */}
       <div className="mb-8">
-        <h2 className="text-base font-semibold mb-2 text-center text-blue-600">音频文件</h2>
+        <h2 className="text-base font-semibold mb-2 text-left text-blue-600">音频文件</h2>
         <table className="w-full border-collapse border border-blue-300">
           <thead>
             <tr className="bg-blue-100">
               <th className="border border-blue-300 p-2 text-center">序号</th>
+              <th className="border border-blue-300 p-2 text-center">播放</th>
               <th className="border border-blue-300 p-2 text-center">名称</th>
               <th className="border border-blue-300 p-2 text-center">大小</th>
               <th className="border border-blue-300 p-2 text-center">时长</th>
@@ -418,41 +449,54 @@ const Home: React.FC = () => {
           </thead>
           <tbody>
             {audioFiles.map((audio, index) => (
-              <tr key={audio.id}>
+              <tr key={audio._id}>
                 <td className="border border-blue-300 p-2 text-center">{index + 1}</td>
                 <td className="border border-blue-300 p-2 text-center">
                   <button
                     onClick={() => handleAudioClick(audio.name)}
-                    className="text-blue-500 hover:underline mr-2"
+                    className="text-blue-500 hover:text-blue-700"
                   >
-                    播放
-                  </button>
-                  <button
-                    onClick={() => handleTranscribe(audio.name)}
-                    className="bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600"
-                  >
-                    转录
+                    {currentlyPlaying === audio.name && audioRef.current && !audioRef.current.paused ? (
+                      <FaPause className="inline-block" />
+                    ) : (
+                      <FaPlay className="inline-block" />
+                    )}
                   </button>
                 </td>
+                <td className="border border-blue-300 p-2 text-left">{audio.name}</td>
                 <td className="border border-blue-300 p-2 text-center">{(audio.size / 1024 / 1024).toFixed(2)} MB</td>
-                <td className="border border-blue-300 p-2 text-center">{audio.duration ? `${audio.duration.toFixed(2)}秒` : 'N/A'}</td>
+                <td className="border border-blue-300 p-2 text-center">{formatDuration(audio.duration)}</td>
                 <td className="border border-blue-300 p-2 text-center">{new Date(audio.createdAt).toLocaleString()}</td>
                 <td className="border border-blue-300 p-2 text-center">
-                  {audio.status === 'completed' ? '已完成' : (
+                  {audio.transcriptionStatus === 'transcribing' ? (
                     <div>
-                      转换中 - {audio.progress}%
+                      转录中 - {audio.transcriptionProgress || 0}%
                       <div className="w-full bg-gray-200 rounded-full h-2.5 mt-1">
                         <div
                           className="bg-blue-600 h-2.5 rounded-full"
-                          style={{ width: `${audio.progress}%` }}
+                          style={{ width: `${audio.transcriptionProgress || 0}%` }}
                         ></div>
                       </div>
                     </div>
+                  ) : audio.transcriptionStatus === 'transcribed' ? (
+                    '已转录'
+                  ) : (
+                    '未转录'
                   )}
                 </td>
                 <td className="border border-blue-300 p-2 text-center">
                   <button
-                    onClick={() => handleDeleteAudio(audio.id)}
+                    onClick={() => handleTranscribe(audio.name)}
+                    className={`bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 mr-2 ${
+                      audio.transcriptionStatus === 'transcribing' ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    disabled={audio.transcriptionStatus === 'transcribing'}
+                  >
+                    {audio.transcriptionStatus === 'transcribed' ? '重新转录' : 
+                     audio.transcriptionStatus === 'transcribing' ? '转录中' : '转录'}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteAudio(audio._id)}
                     className="bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600"
                   >
                     删除
@@ -465,7 +509,13 @@ const Home: React.FC = () => {
       </div>
 
       {/* 音频播放器 */}
-      <audio ref={audioRef} controls className="w-full mt-4" style={{display: audioSrc ? 'block' : 'none'}} />
+      <audio 
+        ref={audioRef} 
+        controls 
+        className="w-full mt-4" 
+        style={{display: audioSrc ? 'block' : 'none'}}
+        onEnded={() => setCurrentlyPlaying(null)}
+      />
 
       {/* 视频文件列表 */}
       <div>
@@ -490,7 +540,7 @@ const Home: React.FC = () => {
                   <button
                     onClick={() => {
                       handleExtractAudio(file.name);
-                      handleStepChange(2);  // 切换到数据处理步骤
+                      handleStepChange(2);  // 切换到数处理步骤
                     }}
                     className="mt-2 bg-blue-500 text-white px-2 py-1 rounded text-sm hover:bg-blue-600"
                     disabled={extractionProgress[file.name] > 0}

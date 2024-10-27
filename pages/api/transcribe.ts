@@ -1,29 +1,46 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-import path from 'path';
-import { convertSpeechToText, cleanText } from '../../utils/videoProcessor';
-import { promises as fsPromises } from 'fs';
+import { convertSpeechToText } from '../../utils/videoProcessor';
+import { connectToDatabase } from '../../utils/database';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'POST') {
     const { filename } = req.body;
-    
+
     if (!filename) {
       return res.status(400).json({ error: 'Filename is required' });
     }
 
     try {
-      const audioPath = path.join(process.cwd(), 'download', 'mp3', filename);
-      const transcription = await convertSpeechToText(audioPath);
-      const cleanedTranscription = await cleanText(transcription);
+      const { db } = await connectToDatabase();
+      const collection = db.collection('audio_files');
 
-      // 保存清洗后的文本
-      const cleanedTxtFilePath = audioPath.replace('.mp3', '_cleaned.txt');
-      await fsPromises.writeFile(cleanedTxtFilePath, cleanedTranscription, 'utf-8');
+      // 更新转录状态为 "transcribing"
+      await collection.updateOne({ name: filename }, { $set: { transcriptionStatus: 'transcribing', transcriptionProgress: 0 } });
 
-      res.status(200).json({ success: true, message: 'Transcription completed' });
+      // 使用 SSE 来实时更新进度
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+
+      const sendProgress = (progress: number) => {
+        res.write(`data: ${JSON.stringify({ progress })}\n\n`);
+      };
+
+      const transcription = await convertSpeechToText(filename, sendProgress);
+
+      // 更新转录状态为 "transcribed" 并保存转录文本
+      await collection.updateOne(
+        { name: filename },
+        { $set: { transcriptionStatus: 'transcribed', transcription: transcription, transcriptionProgress: 100 } }
+      );
+
+      res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
+      res.end();
     } catch (error) {
       console.error('Error in transcription:', error);
-      res.status(500).json({ error: 'Transcription failed' });
+      res.status(500).json({ error: 'Error during transcription process', details: error.message });
     }
   } else {
     res.setHeader('Allow', ['POST']);

@@ -1,10 +1,12 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import fs from 'fs';
 import path from 'path';
+import { connectToDatabase } from '../../utils/database';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'GET') {
     try {
+      const { db } = await connectToDatabase();
       const knowledgeDir = path.join(process.cwd(), 'public', 'knowledge');
       const files = fs.readdirSync(knowledgeDir);
 

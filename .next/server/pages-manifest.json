@@ -2,11 +2,9 @@
   "/_app": "pages/_app.js",
   "/_error": "pages/_error.js",
   "/_document": "pages/_document.js",
-  "/transcription": "pages/transcription.js",
   "/": "pages/index.js",
-  "/api/files/[action]": "pages/api/files/[action].js",
-  "/knowledge": "pages/knowledge.js",
-  "/api/getKnowledgeFiles": "pages/api/getKnowledgeFiles.js",
-  "/api/transcriptions": "pages/api/transcriptions.js",
-  "/api/splitAndVectorize": "pages/api/splitAndVectorize.js"
+  "/transcription": "pages/transcription.js",
+  "/api/files/list": "pages/api/files/list.js",
+  "/api/audio/list": "pages/api/audio/list.js",
+  "/api/audio/delete/[id]": "pages/api/audio/delete/[id].js"
 }

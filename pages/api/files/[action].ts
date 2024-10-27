@@ -41,7 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   console.log(`Received ${req.method} request for action: ${action}`);
 
   try {
-    // 只在需要使用 FFmpeg 的操作中进行检查
+    // 只在需要使用 FFmpeg 的��作中进行检查
     if (action === 'extractAudio') {
       const ffmpegAvailable = await checkFFmpeg();
       if (!ffmpegAvailable) {
@@ -156,7 +156,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             fs.unlinkSync(filePath);
             console.log('Video file deleted successfully');
             
-            // 删除对应的音频文件（如果存��）
+            // 删除对应的音频文件（如果存）
             if (fs.existsSync(audioFilePath)) {
               fs.unlinkSync(audioFilePath);
               console.log('Audio file deleted successfully');
@@ -211,13 +211,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
             console.log('Extracting audio for file:', filename);
 
-            const videoPath = path.join(uploadDir, filename);
-            console.log('Full video path:', videoPath);
+            // 检查多个可能的路径
+            const possiblePaths = [
+              path.join(process.cwd(), 'uploads', filename),
+              path.join(process.cwd(), 'public', 'uploads', filename),
+              path.join(process.cwd(), 'download', 'mp4', filename)
+            ];
 
-            if (!fs.existsSync(videoPath)) {
-              console.error('Video file not found:', videoPath);
+            let videoPath = '';
+            for (const p of possiblePaths) {
+              console.log('Checking path:', p);
+              if (fs.existsSync(p)) {
+                videoPath = p;
+                break;
+              }
+            }
+
+            if (!videoPath) {
+              console.error('Video file not found in any of the checked paths');
               return res.status(404).json({ error: 'Video file not found' });
             }
+
+            console.log('Found video file at:', videoPath);
 
             try {
               // 在提取音频之前检查 FFmpeg
@@ -275,21 +290,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       case 'getAudio':
         if (req.method === 'GET') {
           const { filename } = req.query;
-          if (!filename || typeof filename !== 'string') {
-            return res.status(400).json({ error: 'Filename is required' });
+          if (typeof filename !== 'string') {
+            return res.status(400).json({ error: 'Invalid filename' });
           }
-          const audioPath = path.join(process.cwd(), 'download', 'mp3', filename);
-          console.log('Attempting to serve audio file:', audioPath);
-          if (fs.existsSync(audioPath)) {
-            const stat = fs.statSync(audioPath);
-            res.writeHead(200, {
-              'Content-Type': 'audio/mpeg',
-              'Content-Length': stat.size
-            });
-            const readStream = fs.createReadStream(audioPath);
-            readStream.pipe(res);
-          } else {
-            console.log('Audio file not found:', audioPath);
+          try {
+            const audioUrl = await getAudioFileUrl(filename);
+            res.status(200).json({ url: audioUrl });
+          } catch (error) {
+            console.error('Error getting audio URL:', error);
             res.status(404).json({ error: 'Audio file not found' });
           }
         } else {
