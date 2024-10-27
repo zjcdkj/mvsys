@@ -3,6 +3,7 @@ import formidable from 'formidable';
 import fs from 'fs';
 import path from 'path';
 import { extractAudio, getAudioDuration, checkFFmpeg, getFFmpegVersion, getAudioFileUrl } from '../../../utils/videoProcessor';
+import { connectToDatabase } from '../../../utils/database';
 
 // 在文件顶部添加这个接口定义
 interface FileInfo {
@@ -41,7 +42,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   console.log(`Received ${req.method} request for action: ${action}`);
 
   try {
-    // 只在需要使用 FFmpeg 的��作中进行检查
+    // 只在需要使用 FFmpeg 的作中进行检查
     if (action === 'extractAudio') {
       const ffmpegAvailable = await checkFFmpeg();
       if (!ffmpegAvailable) {
@@ -196,26 +197,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         break;
 
       case 'extractAudio':
-        if (req.method === 'POST') {
-          const form = formidable();
-          form.parse(req, async (err, fields, files) => {
-            if (err) {
-              console.error('Error parsing form:', err);
-              return res.status(500).json({ error: 'Error parsing form data' });
-            }
+        if (req.method === 'GET') {
+          const { filename } = req.query;
+          if (!filename || typeof filename !== 'string') {
+            return res.status(400).json({ error: 'Filename is required' });
+          }
 
-            const filename = Array.isArray(fields.filename) ? fields.filename[0] : fields.filename;
-            if (!filename) {
-              return res.status(400).json({ error: 'Filename is required' });
-            }
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          });
 
-            console.log('Extracting audio for file:', filename);
+          const sendProgress = (progress: number) => {
+            res.write(`data: ${JSON.stringify({ progress })}\n\n`);
+          };
 
+          try {
             // 检查多个可能的路径
             const possiblePaths = [
               path.join(process.cwd(), 'uploads', filename),
               path.join(process.cwd(), 'public', 'uploads', filename),
-              path.join(process.cwd(), 'download', 'mp4', filename)
+              path.join(process.cwd(), 'public', 'videos', filename)
             ];
 
             let videoPath = '';
@@ -228,61 +231,49 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
 
             if (!videoPath) {
-              console.error('Video file not found in any of the checked paths');
-              return res.status(404).json({ error: 'Video file not found' });
+              throw new Error(`Video file not found: ${filename}`);
             }
 
-            console.log('Found video file at:', videoPath);
+            console.log('Video file found at:', videoPath);
 
-            try {
-              // 在提取音频之前检查 FFmpeg
-              const ffmpegAvailable = await checkFFmpeg();
-              if (!ffmpegAvailable) {
-                return res.status(500).json({ error: 'FFmpeg is not available' });
-              }
+            const audioPath = await extractAudio(videoPath, sendProgress);
+            const audioFilename = path.basename(audioPath);
+            
+            console.log('Audio extracted successfully:', audioFilename);
 
-              // 获取 FFmpeg 版本
-              const ffmpegVersion = await getFFmpegVersion();
-              console.log('FFmpeg version:', ffmpegVersion);
+            const duration = await getAudioDuration(audioPath);
+            const size = fs.statSync(audioPath).size;
 
-              // 使用 SSE (Server-Sent Events) 来报告进度
-              res.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive'
-              });
+            const { db } = await connectToDatabase();
+            const audioCollection = db.collection('audio_files');
+            const audioFile = await audioCollection.findOne({ name: audioFilename });
+            const extractionTime = audioFile ? audioFile.extractionTime : 0;
 
-              const audioPath = await extractAudio(videoPath);
-              const audioFilename = path.basename(audioPath);
-              
-              console.log('Audio extracted successfully:', audioFilename);
-
-              // 获取音频时长
-              const duration = await getAudioDuration(audioPath);
-
-              // 获取音频文件大小
-              const { size } = fs.statSync(audioPath);
-
-              // 更新文件记录
-              const records = JSON.parse(fs.readFileSync(recordsFile, 'utf-8'));
-              const updatedRecords = records.map((record: FileInfo) => {
-                if (record.name === filename) {
-                  return { ...record, audioFile: audioFilename };
+            await audioCollection.updateOne(
+              { name: audioFilename },
+              {
+                $set: {
+                  size: size,
+                  duration: duration,
+                  createdAt: new Date(),
+                  originalVideo: filename,
+                  transcriptionStatus: 'not_transcribed',
+                  transcriptionProgress: 0,
+                  extractionTime: extractionTime
                 }
-                return record;
-              });
-              fs.writeFileSync(recordsFile, JSON.stringify(updatedRecords, null, 2));
+              },
+              { upsert: true }
+            );
 
-              res.write(`data: ${JSON.stringify({ complete: true, audioFile: audioFilename, duration, size })}\n\n`);
-              res.end();
-            } catch (error) {
-              console.error('Error extracting audio:', error);
-              res.write(`data: ${JSON.stringify({ error: 'Error extracting audio', details: (error as Error).message })}\n\n`);
-              res.end();
-            }
-          });
+            res.write(`data: ${JSON.stringify({ complete: true, audioFile: audioFilename, duration, size, extractionTime })}\n\n`);
+          } catch (error) {
+            console.error('Error extracting audio:', error);
+            res.write(`data: ${JSON.stringify({ error: 'Error extracting audio', details: (error as Error).message })}\n\n`);
+          } finally {
+            res.end();
+          }
         } else {
-          res.setHeader('Allow', ['POST']);
+          res.setHeader('Allow', ['GET']);
           res.status(405).end(`Method ${req.method} Not Allowed`);
         }
         break;

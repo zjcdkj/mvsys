@@ -36,11 +36,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         { $set: { transcriptionStatus: 'transcribed', transcription: transcription, transcriptionProgress: 100 } }
       );
 
-      res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
+      res.write(`data: ${JSON.stringify({ complete: true, transcription })}\n\n`);
       res.end();
     } catch (error) {
       console.error('Error in transcription:', error);
-      res.status(500).json({ error: 'Error during transcription process', details: error.message });
+      res.write(`data: ${JSON.stringify({ error: 'Error during transcription process', details: error.message })}\n\n`);
+      res.end();
     }
   } else {
     res.setHeader('Allow', ['POST']);

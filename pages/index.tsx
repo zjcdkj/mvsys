@@ -15,11 +15,12 @@ interface AudioInfo {
   name: string;
   size: number;
   createdAt: string;
-  status: 'completed' | 'converting';
+  status: 'completed' | 'converting' | 'not_converted';
   progress?: number;
   duration?: number;
   transcriptionStatus: 'transcribing' | 'transcribed' | 'not_transcribed';
   transcriptionProgress?: number;
+  extractionTime?: number; // 新增字段：提取时长
 }
 
 const Home: React.FC = () => {
@@ -38,11 +39,26 @@ const Home: React.FC = () => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const router = useRouter();
+  const [isPolling, setIsPolling] = useState(false);
+  const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     fetchUploadRecords();
     fetchAudioFiles();
-  }, []);
+
+    // 设置轮询间隔
+    pollingInterval.current = setInterval(() => {
+      if (isPolling) {
+        fetchAudioFiles();
+      }
+    }, 5000); // 每5秒轮询一次
+
+    return () => {
+      if (pollingInterval.current) {
+        clearInterval(pollingInterval.current);
+      }
+    };
+  }, [isPolling]);
 
   const fetchUploadRecords = async () => {
     try {
@@ -51,14 +67,15 @@ const Home: React.FC = () => {
       setFiles(response.data);
     } catch (error: any) {
       console.error('Error fetching upload records:', error);
-      setErrorMessage('获取上传记录时出错，请重试。');
+      setErrorMessage('取上传记录时出错，请试。');
     }
   };
 
   const fetchAudioFiles = async () => {
     try {
       const response = await axios.get('/api/audio/list');
-      setAudioFiles(response.data);
+      const uniqueAudioFiles = response.data;
+      setAudioFiles(uniqueAudioFiles);
     } catch (error) {
       console.error('Error fetching audio files:', error);
       setErrorMessage('获取音频文件列表失败，请重试。');
@@ -110,7 +127,7 @@ const Home: React.FC = () => {
       console.log('Upload response:', response.data);
       setUploadProgress(0);
       setSelectedFile(null);
-      fetchUploadRecords(); // 上传成功后重新获取文件列表
+      fetchUploadRecords(); // 上传成��后重新获取文件列表
       setSuccessMessage('文件上传成功！');
     } catch (error: any) {
       console.error('Error uploading file:', error);
@@ -134,29 +151,43 @@ const Home: React.FC = () => {
       setSuccessMessage(null);
       setExtractionProgress(prev => ({ ...prev, [filename]: 0 }));
       setProcessingFile(filename);
+      setIsPolling(true);
       console.log('Sending extract audio request for:', filename);
       
       setCurrentStep(2);
       
-      const response = await axios.post('/api/files/extractAudio', { filename }, {
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total) {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            setExtractionProgress(prev => ({ ...prev, [filename]: percentCompleted }));
-          }
-        },
-      });
+      const eventSource = new EventSource(`/api/files/extractAudio?filename=${encodeURIComponent(filename)}`);
 
-      console.log('Audio extraction completed:', response.data);
-      setSuccessMessage('音频提取成功！');
-      fetchUploadRecords();
-      fetchAudioFiles(); // 确保这个函数被调用
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log('Received event:', data);
+        if (data.progress !== undefined) {
+          setExtractionProgress(prev => ({ ...prev, [filename]: data.progress }));
+        }
+        if (data.complete) {
+          console.log('Audio extraction completed:', data);
+          setSuccessMessage(`音频提取成功！耗时: ${data.extractionTime.toFixed(2)}秒`);
+          eventSource.close();
+          fetchUploadRecords();
+          fetchAudioFiles();
+        }
+        if (data.error) {
+          throw new Error(data.error);
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('EventSource error:', error);
+        throw new Error('音频提取过程中出错');
+      };
+
     } catch (error: any) {
       console.error('Error extracting audio:', error);
-      setErrorMessage('音频提取失败，请重试。');
+      setErrorMessage(`音频提取失败：${error.message}`);
     } finally {
-      setExtractionProgress(prev => ({ ...prev, [filename]: 0 }));
+      setIsPolling(false);
       setProcessingFile(null);
+      setExtractionProgress(prev => ({ ...prev, [filename]: 0 }));
     }
   };
 
@@ -261,13 +292,14 @@ const Home: React.FC = () => {
       }
     } catch (error) {
       console.error('Error fetching or playing audio:', error);
-      setErrorMessage(`获取或播放音频时出错：${error.message}`);
+      setErrorMessage(`获取或播放音频时出错${error.message}`);
     }
   };
 
   const handleTranscribe = async (audioFileName: string) => {
     try {
       setErrorMessage(null);
+      setIsPolling(true);
       // 立即更新状态为 'transcribing'
       setAudioFiles(prevFiles => 
         prevFiles.map(file => 
@@ -281,14 +313,7 @@ const Home: React.FC = () => {
       
       if (response.data.success) {
         setSuccessMessage('转录成功！');
-        // 更新状态为 'transcribed'
-        setAudioFiles(prevFiles => 
-          prevFiles.map(file => 
-            file.name === audioFileName 
-              ? { ...file, transcriptionStatus: 'transcribed', transcriptionProgress: 100 } 
-              : file
-          )
-        );
+        fetchAudioFiles(); // 重新获取最新的音频文件列表
       } else {
         setErrorMessage('转录失败，请重试。');
         // 如果失败，将状态恢复为 'not_transcribed'
@@ -311,6 +336,8 @@ const Home: React.FC = () => {
             : file
         )
       );
+    } finally {
+      setIsPolling(false);
     }
   };
 
@@ -322,7 +349,7 @@ const Home: React.FC = () => {
   }
 
   return (
-    <div className="container mx-auto" style={{ margin: '20px', paddingLeft: '0px', paddingRight: '0px' }}>
+    <div className="container mx-auto" style={{ margin: '20px', paddingLeft: '20px', paddingRight: '0px' }}>
       <h1 className="text-lg font-bold mb-4 text-blue-600 border-b pb-2">文件管理</h1>
       
       {/* 切换按钮 */}
@@ -374,12 +401,12 @@ const Home: React.FC = () => {
             </p>
             {selectedFile && (
               <div className="mt-4">
-                <p className="text-blue-600">已选择文件: {selectedFile.name}</p>
+                <p className="text-blue-600">已选��文件: {selectedFile.name}</p>
                 <button
                   onClick={handleUpload}
                   className="mt-2 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
                 >
-                  确定
+                  定
                 </button>
               </div>
             )}
@@ -431,7 +458,7 @@ const Home: React.FC = () => {
         <p className="text-green-500 mt-2">{successMessage}</p>
       )}
 
-      {/* 音频文件列表 */}
+      {/* 音频件列表 */}
       <div className="mb-8">
         <h2 className="text-base font-semibold mb-2 text-left text-blue-600">音频文件</h2>
         <table className="w-full border-collapse border border-blue-300">
@@ -443,6 +470,7 @@ const Home: React.FC = () => {
               <th className="border border-blue-300 p-2 text-center">大小</th>
               <th className="border border-blue-300 p-2 text-center">时长</th>
               <th className="border border-blue-300 p-2 text-center">生成时间</th>
+              <th className="border border-blue-300 p-2 text-center">提取时长</th>
               <th className="border border-blue-300 p-2 text-center">状态</th>
               <th className="border border-blue-300 p-2 text-center">操作</th>
             </tr>
@@ -467,6 +495,9 @@ const Home: React.FC = () => {
                 <td className="border border-blue-300 p-2 text-center">{(audio.size / 1024 / 1024).toFixed(2)} MB</td>
                 <td className="border border-blue-300 p-2 text-center">{formatDuration(audio.duration)}</td>
                 <td className="border border-blue-300 p-2 text-center">{new Date(audio.createdAt).toLocaleString()}</td>
+                <td className="border border-blue-300 p-2 text-center">
+                  {audio.extractionTime ? `${audio.extractionTime.toFixed(2)}秒` : 'N/A'}
+                </td>
                 <td className="border border-blue-300 p-2 text-center">
                   {audio.transcriptionStatus === 'transcribing' ? (
                     <div>

@@ -13,13 +13,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const audioFiles = await audioCollection.find({}).toArray();
       console.log(`Fetched ${audioFiles.length} audio files`);
 
-      // 确保每个音频文件对象都有 _id 字段
-      const audioFilesWithId = audioFiles.map(file => ({
-        ...file,
-        _id: file._id.toString() // 将 ObjectId 转换为字符串
-      }));
+      // 使用 Set 来去除可能的重复项
+      const uniqueAudioFiles = Array.from(new Set(audioFiles.map(file => file.name)))
+        .map(name => {
+          const file = audioFiles.find(f => f.name === name);
+          return {
+            ...file,
+            _id: file._id.toString() // 将 ObjectId 转换为字符串
+          };
+        });
 
-      res.status(200).json(audioFilesWithId);
+      console.log(`Returning ${uniqueAudioFiles.length} unique audio files`);
+      res.status(200).json(uniqueAudioFiles);
     } catch (error) {
       console.error('Error in audio/list API:', error);
       res.status(500).json({ error: 'Internal Server Error', details: error.message });
